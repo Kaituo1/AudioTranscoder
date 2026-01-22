@@ -1,935 +1,1140 @@
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+import sys
 import os
 import threading
 import subprocess
-import wave
-import struct
-import math
-import time
+from pathlib import Path
+from typing import List, Tuple, Optional
+
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QLabel, QPushButton, QFileDialog, QProgressBar, QTableWidget,
+    QTableWidgetItem, QLineEdit, QGroupBox,
+    QMessageBox, QHeaderView, QAbstractItemView, QStyledItemDelegate,
+    QSplitter, QComboBox, QCheckBox
+)
+from PyQt5.QtCore import (
+    Qt, QThread, pyqtSignal, QSettings
+)
+from PyQt5.QtGui import (
+    QDragEnterEvent, QDropEvent, QFont, QColor, QPixmap, QIcon
+)
 
 
-class FixedAudioConverter:
-    def __init__(self, root):
-        self.root = root
-        
-        # ========== 定义统一的颜色方案 ==========
-        self.colors = {
-            "primary": "#4CAF50",  # 主色调 - 绿色
-            "secondary": "#2196F3",  # 辅助色 - 蓝色
-            "accent": "#FF9800",  # 强调色 - 橙色
-            "text": "#333333",  # 主文本色 - 深灰色
-            "text_light": "#666666",  # 次要文本色 - 中灰色
-            "background": "#f5f5f5",  # 背景色 - 浅灰色
-            "white": "#ffffff",  # 白色
-            "success": "#4CAF50",  # 成功色 - 绿色
-            "warning": "#FFC107",  # 警告色 - 黄色
-            "error": "#F44336",  # 错误色 - 红色
-        }
-        
-        self.root.title("音频格式转换器v2.0.0")
-        # 设置合适的窗口大小，确保所有内容完整显示
-        # 适应分类后的格式选项
-        self.root.geometry("750x1150")
-        # 不允许拖动调整窗口大小，但保留最大化功能（全屏）
-        self.root.resizable(False, False)
-        # 设置统一的背景色
-        self.root.configure(background=self.colors["background"])
-
-        # 存储选择的音视频文件列表
-        self.media_files = []
-
-        # ========== 界面组件 ==========
-        # 说明文字 - 美化字体和颜色
-        self.desc_label = tk.Label(
-            root,
-            text="原理: 基于FFmpeg实现高质量音频转换，支持多种音频和视频格式，\n支持批量处理，所有格式均采用最高质量设置",
-            justify="left",
-            font=("微软雅黑", 10),
-            fg=self.colors["text"],
-            bg=self.colors["background"]
-        )
-        self.desc_label.pack(pady=8, padx=15, anchor="w")
-
-        # 支持的音频和视频格式
-        self.supported_formats = [
-            # 音频格式
-            "wav", "mp3", "flac", "aac", "ogg", "wma", "m4a", "aiff", "alac", "ape", "opus",
-            "wv", "dsf", "dff", "mpc", "speex", "ra", "cda",
-            # 视频格式
-            "mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "mpg", "mpeg", "ts", "m2ts",
-            "3gp", "vob", "ogv", "rm", "rmvb"
-        ]
-        
-        # 输入文件列表框
-        self.file_list_frame = tk.Frame(root)
-        # 让文件列表框架能够垂直扩展
-        self.file_list_frame.pack(pady=3, fill="both", expand=True, padx=10)
-        self.file_list_label = tk.Label(
-            self.file_list_frame, 
-            text="已选择文件:",
-            font=("微软雅黑", 11, "bold"),
-            fg=self.colors["text"],
-            bg=self.colors["background"]
-        )
-        self.file_list_label.pack(anchor="w", pady=(5, 5))
-        
-        # 创建表格框架
-        self.tree_frame = tk.Frame(self.file_list_frame, bg=self.colors["white"])
-        self.tree_frame.pack(fill="both", expand=True, pady=2)
-        
-        # 创建滚动条
-        self.tree_scroll = tk.Scrollbar(self.tree_frame)
-        self.tree_scroll.pack(side="right", fill="y")
-        
-        # 创建Treeview表格
-        self.file_listbox = ttk.Treeview(
-            self.tree_frame, 
-            columns=("文件名", "大小", "格式"),
-            show="headings",
-            yscrollcommand=self.tree_scroll.set,
-            selectmode="extended",
-            height=1  # 减小高度，只显示1行
-        )
-        
-        # 配置列宽和对齐方式
-        self.file_listbox.column("文件名", width=250, anchor="w")
-        self.file_listbox.column("大小", width=100, anchor="e")
-        self.file_listbox.column("格式", width=80, anchor="center")
-        
-        # 配置表头
-        self.file_listbox.heading("文件名", text="文件名", anchor="w")
-        self.file_listbox.heading("大小", text="大小", anchor="center")
-        self.file_listbox.heading("格式", text="格式", anchor="center")
-        
-        # 简化样式配置，避免冲突 - 只设置必要的样式，不使用主题
-        style = ttk.Style()
-        
-        # 只设置必要的样式，不修改背景和前景色
-        style.configure("Treeview.Heading", 
-                       font=("微软雅黑", 10, "bold"))
-        style.configure("Treeview",
-                       font=("微软雅黑", 9))
-        
-        # 放置表格
-        self.file_listbox.pack(fill="both", expand=True)
-        self.tree_scroll.config(command=self.file_listbox.yview)
-        
-        # 提示文字 - 将在有文件时移除
-        self.empty_label = tk.Label(
-            self.tree_frame, 
-            text="点击'添加文件'按钮选择文件",
-            font=("微软雅黑", 10),
-            fg="gray",
-            bg=self.colors["white"]
-        )
-        self.empty_label.place(relx=0.5, rely=0.5, anchor="center")
-        
-        # 文件统计信息
-        self.file_summary_label = tk.Label(
-            self.file_list_frame,
-            text="",
-            font=("微软雅黑", 9),
-            fg=self.colors["text_light"],
-            bg=self.colors["background"]
-        )
-        self.file_summary_label.pack(anchor="w", pady=(2, 5))
-
-        # 文件操作按钮
-        self.file_ops_frame = tk.Frame(self.file_list_frame)
-        self.file_ops_frame.pack(fill="x", pady=5)
-        
-        # 使用更美观的按钮样式 - 统一的UI设计
-        btn_style = {
-            "font": ("微软雅黑", 10, "bold"),
-            "padx": 15,
-            "pady": 8,
-            "relief": "flat",
-            "borderwidth": 1,
-            "highlightthickness": 0,
-            "cursor": "hand2",
-            "width": 12,  # 固定宽度，确保文字完整显示
-            "anchor": "center"  # 文字居中显示
-        }
-        
-        self.add_btn = tk.Button(
-            self.file_ops_frame, 
-            text="添加文件", 
-            command=self.add_files,
-            bg="#4CAF50",
-            fg="white",
-            **btn_style
-        )
-        self.add_btn.pack(side="left", padx=5, expand=True, fill="x")
-
-        self.add_folder_btn = tk.Button(
-            self.file_ops_frame, 
-            text="添加文件夹", 
-            command=self.add_folder,
-            bg="#2196F3",
-            fg="white",
-            **btn_style
-        )
-        self.add_folder_btn.pack(side="left", padx=5, expand=True, fill="x")
-
-        self.remove_btn = tk.Button(
-            self.file_ops_frame, 
-            text="移除所选", 
-            command=self.remove_files,
-            bg="#f44336",
-            fg="white",
-            **btn_style
-        )
-        self.remove_btn.pack(side="left", padx=5, expand=True, fill="x")
-        
-        self.clear_btn = tk.Button(
-            self.file_ops_frame, 
-            text="清空所有", 
-            command=self.clear_files,
-            bg="#FFC107",
-            fg="black",
-            **btn_style
-        )
-        self.clear_btn.pack(side="left", padx=5, expand=True, fill="x")
-
-        # 输出目录 - 美化样式
-        self.output_frame = tk.Frame(root)
-        self.output_frame.pack(pady=8, fill="x", padx=15)
-        self.output_label = tk.Label(
-            self.output_frame, 
-            text="输出目录:",
-            font=("微软雅黑", 11, "bold"),
-            fg=self.colors["text"]
-        )
-        self.output_label.pack(side="left", padx=(0, 10))
-        self.output_path = tk.StringVar(value=os.path.join(os.getcwd(), "output"))
-        self.output_entry = tk.Entry(
-            self.output_frame, 
-            textvariable=self.output_path, 
-            font=("微软雅黑", 10),
-            relief="flat",
-            borderwidth=1,
-            highlightthickness=2,
-            highlightbackground=self.colors["background"],
-            highlightcolor=self.colors["primary"],
-            bg=self.colors["white"],
-            fg=self.colors["text"]
-        )
-        self.output_entry.pack(side="left", padx=5, fill="x", expand=True, ipady=4)
-        self.output_btn = tk.Button(
-            self.output_frame, 
-            text="修改", 
-            command=self.choose_output_dir,
-            bg=self.colors["secondary"],
-            fg=self.colors["white"],
-            font=("微软雅黑", 10, "bold"),
-            padx=20,
-            pady=8,
-            relief="flat",
-            borderwidth=0,
-            highlightthickness=0,
-            cursor="hand2",
-            activebackground="#1976d2",
-            width=8
-        )
-        self.output_btn.pack(side="left", padx=5)
-
-        # ========== 输出格式选择 ==========
-        # 输出格式选择 - 美化样式
-        self.format_frame = tk.Frame(root)
-        self.format_frame.pack(pady=8, fill="x", padx=15)
-        self.format_label = tk.Label(
-            self.format_frame, 
-            text="输出格式:",
-            font=("微软雅黑", 11, "bold"),
-            fg=self.colors["text"]
-        )
-        self.format_label.pack(anchor="w", pady=(0, 5))
-        
-        # 输出格式分类
-        self.format_var = tk.StringVar(value="MP3")
-        self.format_buttons = []
-        
-        # 格式分类定义 - 每个格式只出现在一个分类中
-        format_categories = {
-            "常用音频格式": ["MP3", "WAV", "FLAC", "AAC"],
-            "其他音频格式": ["OGG", "OPUS", "WMA", "AIFF"],
-            "移动设备格式": ["M4A", "M4R"],
-            "无损格式": ["ALAC", "WV"]
-        }
-        
-        # 创建格式选项框架
-        self.format_options_frame = tk.Frame(self.format_frame)
-        self.format_options_frame.pack(fill="x", pady=5)
-        
-        # 按类别显示格式选项
-        for category, formats in format_categories.items():
-            # 创建分类标签
-            category_label = tk.Label(
-                self.format_options_frame,
-                text=f"{category}:",
-                font=("微软雅黑", 10, "bold"),
-                fg=self.colors["primary"],
-                bg=self.colors["background"]
-            )
-            category_label.pack(anchor="w", pady=(10, 5), padx=5)
-            
-            # 创建类别按钮框架
-            category_frame = tk.Frame(self.format_options_frame, bg=self.colors["background"])
-            category_frame.pack(fill="x", pady=2)
-            
-            # 添加格式按钮
-            for format_name in formats:
-                format_btn = tk.Button(
-                    category_frame,
-                    text=format_name,
-                    command=lambda f=format_name: self.format_var.set(f),
-                    font=("微软雅黑", 10),
-                    bg=self.colors["white"],
-                    fg=self.colors["text"],
-                    relief="flat",
-                    borderwidth=1,
-                    padx=12,
-                    pady=6,
-                    cursor="hand2"
-                )
-                format_btn.pack(side="left", padx=5, pady=3)
-                self.format_buttons.append(format_btn)
-        
-        # 绑定选中状态更新
-        self.format_var.trace_add("write", self.update_format_btn_style)
-        
-        # 更新初始选中状态
-        self.update_format_btn_style()
-
-        # 标签选项 - 美化样式
-        self.tag_frame = tk.Frame(root)
-        self.tag_frame.pack(pady=8, fill="x", padx=15)
-        self.remove_id3 = tk.BooleanVar(value=True)
-        self.remove_riff = tk.BooleanVar(value=True)
-        self.open_dir = tk.BooleanVar(value=True)
-        
-        # 创建美化的复选框
-        checkbox_style = {
-            "font": ("微软雅黑", 10),
-            "padx": 10,
-            "pady": 5,
-            "fg": "#333333",
-            "activeforeground": "#1976d2",
-            "relief": "flat",
-            "cursor": "hand2"
-        }
-        
-        tk.Checkbutton(
-            self.tag_frame, 
-            text="去掉ID3标签", 
-            variable=self.remove_id3,
-            selectcolor="#4CAF50",
-            **checkbox_style
-        ).pack(side="left", padx=10)
-        
-        tk.Checkbutton(
-            self.tag_frame, 
-            text="去掉RIFF标签(WAV)", 
-            variable=self.remove_riff,
-            selectcolor="#4CAF50",
-            **checkbox_style
-        ).pack(side="left", padx=10)
-        
-        tk.Checkbutton(
-            self.tag_frame, 
-            text="自动打开输出目录", 
-            variable=self.open_dir,
-            selectcolor="#4CAF50",
-            **checkbox_style
-        ).pack(side="left", padx=10)
-
-        # 转换控制按钮 - 美化样式
-        self.convert_btn_frame = tk.Frame(root)
-        self.convert_btn_frame.pack(pady=15)
-        
-        self.convert_btn = tk.Button(
-            self.convert_btn_frame, 
-            text="开始批量转换", 
-            command=self.start_convert_thread,
-            font=("微软雅黑", 14, "bold"), 
-            bg="#4CAF50", 
-            fg="white",
-            padx=30,
-            pady=12,
-            relief="flat",
-            borderwidth=0,
-            highlightthickness=0,
-            cursor="hand2",
-            activebackground="#388E3C",  # 鼠标悬停时的颜色
-            activeforeground="white",
-            bd=0
-        )
-        self.convert_btn.pack(side="left", padx=10)
-        
-        # 使用原生tk.Button实现停止按钮，确保背景色正确显示
-        # 统一按钮样式配置
-        btn_style = {
-            "font": ("微软雅黑", 14, "bold"),
-            "padx": 30,
-            "pady": 12,
-            "relief": "flat",
-            "borderwidth": 0,
-            "highlightthickness": 0,
-            "cursor": "hand2",
-            "width": 8  # 固定宽度，确保文字完整显示
-        }
-        
-        # 创建停止按钮 - 只使用标准支持的选项
-        self.stop_btn = tk.Button(
-            self.convert_btn_frame, 
-            text="停止转换", 
-            command=self.stop_convert,
-            bg="#f44336",  # 正常状态红色背景
-            fg="white",    # 白色文字
-            activebackground="#b71c1c",  # 鼠标悬停/按下时深红色
-            activeforeground="white",     # 鼠标悬停/按下时白色文字
-            **btn_style
-        )
-        
-        # 手动设置初始禁用状态
-        self.stop_btn.config(state="disabled")
-        # 手动设置禁用状态的样式
-        self.stop_btn.config(bg="#bdbdbd", fg="white")
-        
-        self.stop_btn.pack(side="left", padx=10)
-        
-        # 转换控制标志
-        self.is_converting = False
-        self.stop_requested = False
-        self.current_process = None
-        
-        # 进度条 - 美化样式
-        self.progress = ttk.Progressbar(
-            root, 
-            orient="horizontal", 
-            mode="determinate",
-            maximum=100
-        )
-        self.progress["value"] = 0  # 初始状态为0%
-        self.progress.pack(pady=12, padx=20, fill="x")
-        
-        # 进度文本
-        self.progress_text = tk.StringVar(value="")
-        self.progress_label = tk.Label(
-            root, 
-            textvariable=self.progress_text,
-            font=("微软雅黑", 10),
-            fg=self.colors["text"],
-            bg=self.colors["background"]
-        )
-        self.progress_label.pack(pady=5)
-        
-        # 状态信息 - 美化样式
-        self.status_label = tk.Label(
-            root, 
-            text="等待转换",
-            font=("微软雅黑", 12, "italic"),
-            fg=self.colors["text_light"],
-            bg=self.colors["background"]
-        )
-        self.status_label.pack(pady=10)
-        
-        
-
-    def format_file_info(self, file_path):
-        """格式化文件信息，返回文件名、大小和格式的元组"""
-        try:
-            filename = os.path.basename(file_path)
-            file_size = os.path.getsize(file_path)
-            
-            # 格式化文件大小
-            if file_size < 1024:
-                size_str = f"{file_size} B"
-            elif file_size < 1024 * 1024:
-                size_str = f"{file_size / 1024:.1f} KB"
-            elif file_size < 1024 * 1024 * 1024:
-                size_str = f"{file_size / (1024 * 1024):.1f} MB"
-            else:
-                size_str = f"{file_size / (1024 * 1024 * 1024):.2f} GB"
-            
-            # 获取文件格式
-            ext = os.path.splitext(file_path)[1].upper().lstrip('.')
-            if not ext:
-                ext = "未知"
-            
-            return (filename, size_str, ext)
-        except:
-            filename = os.path.basename(file_path)
-            return (filename, "", "未知")
+class StyledItemDelegate(QStyledItemDelegate):
+    """自定义表格项代理，提供更好的视觉反馈"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
     
-    def update_file_summary(self):
-        """更新文件统计信息显示"""
-        if not self.media_files:
-            self.file_summary_label.config(text="")
-            return
+    def paint(self, painter, option, index):
+        # 高亮正在转换的文件
+        if hasattr(self.parent(), 'current_converting_file'):
+            if index.row() == getattr(self.parent(), 'current_row', -1):
+                painter.fillRect(option.rect, QColor(255, 248, 225))  # 浅黄色背景
         
-        total_size = 0
-        for file_path in self.media_files:
-            try:
-                total_size += os.path.getsize(file_path)
-            except:
-                pass
-        
-        # 格式化总大小
-        if total_size < 1024:
-            size_str = f"{total_size} B"
-        elif total_size < 1024 * 1024:
-            size_str = f"{total_size / 1024:.1f} KB"
-        elif total_size < 1024 * 1024 * 1024:
-            size_str = f"{total_size / (1024 * 1024):.1f} MB"
-        else:
-            size_str = f"{total_size / (1024 * 1024 * 1024):.2f} GB"
-        
-        self.file_summary_label.config(
-            text=f"共 {len(self.media_files)} 个文件，总计 {size_str}"
-        )
+        super().paint(painter, option, index)
+
+
+class ConvertWorker(QThread):
+    """优化的转换工作线程"""
     
-    # ========== 文件操作 ==========
-    def add_files(self):
-        # 移除提示文字 - Treeview使用单独的标签显示提示
-        if len(self.media_files) == 0 and self.empty_label.winfo_viewable():
-            self.empty_label.place_forget()
-                
-        # 创建支持的文件类型过滤器
-        supported_files = ";".join([f"*.{fmt}" for fmt in self.supported_formats])
-        
-        # 分离音频和视频格式
-        audio_formats = [fmt for fmt in self.supported_formats if fmt not in ["mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "mpg", "mpeg", "ts", "m2ts", "3gp", "vob", "ogv", "rm", "rmvb"]]
-        video_formats = [fmt for fmt in self.supported_formats if fmt in ["mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "mpg", "mpeg", "ts", "m2ts", "3gp", "vob", "ogv", "rm", "rmvb"]]
-        
-        audio_files = ";".join([f"*.{fmt}" for fmt in audio_formats])
-        video_files = ";".join([f"*.{fmt}" for fmt in video_formats])
-        
-        files = filedialog.askopenfilenames(
-            filetypes=[
-                ("所有支持的音视频文件", supported_files),
-                ("音频文件", audio_files),
-                ("视频文件", video_files),
-                ("MP3文件", "*.mp3"),
-                ("WAV文件", "*.wav"),
-                ("FLAC文件", "*.flac"),
-                ("MP4文件", "*.mp4"),
-                ("MKV文件", "*.mkv"),
-                ("AVI文件", "*.avi"),
-                ("所有文件", "*.*")
-            ]
-        )
-        for file in files:
-            if file not in self.media_files:
-                self.media_files.append(file)
-                # 如果是第一个文件，移除提示文字
-                if len(self.media_files) == 1:
-                    self.empty_label.place_forget()
-                # 插入表格行 - Treeview使用空字符串作为父项
-                self.file_listbox.insert('', tk.END, values=self.format_file_info(file))
-                self.update_file_summary()
+    # 信号定义
+    progress_update = pyqtSignal(int, str, str, bool)  # 进度, 状态, 文件名, 是否成功
+    conversion_complete = pyqtSignal(int, int, int)     # 成功数, 失败数, 跳过数
+    file_processing = pyqtSignal(int, str)              # 当前处理文件索引, 文件名
     
-    def add_folder(self):
-        """添加文件夹中的所有支持的音视频文件"""
-        # 移除提示文字 - Treeview使用单独的标签显示提示
-        if len(self.media_files) == 0 and self.empty_label.winfo_viewable():
-            self.empty_label.place_forget()
-        
-        # 让用户选择文件夹
-        folder_path = filedialog.askdirectory()
-        if not folder_path:
-            return
-        
-        # 递归遍历文件夹，获取所有支持的音视频文件
-        added_count = 0
-        for root_dir, dirs, files in os.walk(folder_path):
-            for file in files:
-                # 获取文件扩展名
-                ext = os.path.splitext(file)[1].lower().lstrip('.')
-                if ext in self.supported_formats:
-                    file_path = os.path.join(root_dir, file)
-                    if file_path not in self.media_files:
-                        self.media_files.append(file_path)
-                        # 如果是第一个文件，移除提示文字
-                        if len(self.media_files) == 1:
-                            self.empty_label.place_forget()
-                        # 插入表格行 - Treeview使用空字符串作为父项
-                        self.file_listbox.insert('', tk.END, values=self.format_file_info(file_path))
-                        added_count += 1
-        
-        if added_count > 0:
-            self.update_file_summary()
-            messagebox.showinfo("成功", f"已添加 {added_count} 个音视频文件")
-
-    def remove_files(self):
-        selected_items = self.file_listbox.selection()
-        if not selected_items:
-            return
-        
-        # 从后往前删除，避免索引混乱
-        for item in reversed(selected_items):
-            idx = self.file_listbox.index(item)
-            self.file_listbox.delete(item)
-            del self.media_files[idx]
-        
-        # 如果没有文件了，显示提示文字
-        if not self.media_files:
-            self.empty_label.place(relx=0.5, rely=0.5, anchor="center")
-        
-        # 更新统计信息
-        self.update_file_summary()
+    # FFmpeg预设配置
+    FORMAT_PRESETS = {
+        "mp3": {
+            "flags": ["-f", "mp3"],
+            "params": ["-c:a", "libmp3lame", "-b:a", "320k", "-q:a", "0"]
+        },
+        "wav": {
+            "flags": ["-f", "wav"],
+            "params": ["-c:a", "pcm_s32le"]
+        },
+        "flac": {
+            "flags": ["-f", "flac"],
+            "params": ["-c:a", "flac", "-compression_level", "12"]
+        },
+        "aac": {
+            "flags": ["-f", "adts"],
+            "params": ["-c:a", "aac", "-b:a", "320k"]
+        },
+        "ogg": {
+            "flags": ["-f", "ogg"],
+            "params": ["-c:a", "libvorbis", "-q:a", "10"]
+        },
+        "m4a": {
+            "flags": ["-f", "mp4"],
+            "params": ["-c:a", "aac", "-b:a", "320k"]
+        },
+        "opus": {
+            "flags": ["-f", "opus"],
+            "params": ["-c:a", "libopus", "-b:a", "192k"]
+        }
+    }
     
-    def clear_files(self):
-        """清空所有文件"""
-        if len(self.media_files) > 0:
-            self.file_listbox.delete(*self.file_listbox.get_children())
-            self.media_files.clear()
-            # 显示提示文字
-            self.empty_label.place(relx=0.5, rely=0.5, anchor="center")
-            # 更新统计信息
-            self.update_file_summary()
-
-    # ========== 选择输出目录 ==========
-    def choose_output_dir(self):
-        dir_path = filedialog.askdirectory()
-        if dir_path:
-            self.output_path.set(dir_path)
-
-    # ========== 音频处理 ==========
-    def resample_audio(self, samples, old_rate, new_rate):
-        """重采样音频数据"""
-        if old_rate == new_rate:
-            return samples
-
-        duration = len(samples) / old_rate
-        new_length = int(duration * new_rate)
-        new_samples = []
-
-        for i in range(new_length):
-            old_pos = i * old_rate / new_rate
-            left = int(old_pos)
-            right = min(left + 1, len(samples) - 1)
-            alpha = old_pos - left
-            
-            if left == right:
-                new_samples.append(samples[left])
-            else:
-                # 线性插值
-                sample = samples[left] * (1 - alpha) + samples[right] * alpha
-                new_samples.append(sample)
-
-        return new_samples
-
-    def convert_bit_depth(self, samples, old_depth, new_depth):
-        """转换音频位深"""
-        if old_depth == new_depth:
-            return samples
-
-        # 计算旧位深的取值范围
-        old_min = - (2 ** (old_depth - 1))
-        old_max = (2 ** (old_depth - 1)) - 1
+    def __init__(self, files: List[str], output_dir: str, output_format: str):
+        super().__init__()
+        self.files = files
+        self.output_dir = output_dir
+        self.output_format = output_format.lower()
+        self.stop_flag = threading.Event()
+        self.pause_flag = threading.Event()
+        self._ffmpeg_path = None  # 缓存FFmpeg路径
         
-        # 计算新位深的取值范围
-        new_min = - (2 ** (new_depth - 1))
-        new_max = (2 ** (new_depth - 1)) - 1
-
-        new_samples = []
-        for sample in samples:
-            # 归一化到[-1, 1]
-            normalized = (sample - old_min) / (old_max - old_min) * 2 - 1
-            # 转换到新位深范围
-            new_sample = normalized * new_max
-            # 限制范围
-            new_sample = max(new_min, min(new_max, round(new_sample)))
-            new_samples.append(int(new_sample))
-
-        return new_samples
-
-    def update_format_btn_style(self, *args):
-        """更新输出格式按钮的选中状态"""
-        current_format = self.format_var.get()
-        for btn in self.format_buttons:
-            if btn.cget("text") == current_format:
-                btn.configure(
-                    bg=self.colors["primary"],
-                    fg=self.colors["white"],
-                    relief="flat"
-                )
-            else:
-                btn.configure(
-                    bg=self.colors["white"],
-                    fg=self.colors["text"],
-                    relief="flat"
-                )
-
-    def find_ffmpeg(self):
-        """查找FFmpeg，优先检查系统环境变量，然后检查程序目录"""
-        import sys
+    @property
+    def ffmpeg_path(self):
+        """获取FFmpeg路径（带缓存）"""
+        if self._ffmpeg_path is None:
+            self._ffmpeg_path = self._find_ffmpeg()
+        return self._ffmpeg_path
+    
+    def _find_ffmpeg(self) -> Optional[str]:
+        """优化FFmpeg查找逻辑"""
         import shutil
         
-        # 优先检查系统环境变量
-        ffmpeg_path = shutil.which("ffmpeg.exe")
-        if ffmpeg_path and os.access(ffmpeg_path, os.X_OK):
-            return ffmpeg_path
+        # 检查环境变量
+        for cmd in ["ffmpeg", "ffmpeg.exe"]:
+            path = shutil.which(cmd)
+            if path and os.access(path, os.X_OK):
+                return path
         
-        # 处理PyInstaller打包后的情况
-        if hasattr(sys, '_MEIPASS'):
-            # 这是打包后的环境，_MEIPASS是临时解压目录
-            current_dir = os.path.dirname(sys.executable)
-        else:
-            # 这是普通Python环境
-            current_dir = os.path.dirname(os.path.abspath(__file__))
+        # 检查常见目录
+        search_paths = [
+            os.path.dirname(os.path.abspath(__file__)),
+            os.getcwd(),
+            os.path.join(os.getcwd(), "ffmpeg"),
+            os.path.join(os.path.dirname(sys.executable), "ffmpeg") if hasattr(sys, '_MEIPASS') else None
+        ]
         
-        # 检查当前目录
-        ffmpeg_path = os.path.join(current_dir, "ffmpeg.exe")
-        if os.path.exists(ffmpeg_path) and os.access(ffmpeg_path, os.X_OK):
-            return ffmpeg_path
-        
-        # 检查ffmpeg目录
-        ffmpeg_dir = os.path.join(current_dir, "ffmpeg")
-        if os.path.exists(ffmpeg_dir):
-            ffmpeg_path = os.path.join(ffmpeg_dir, "ffmpeg.exe")
-            if os.path.exists(ffmpeg_path) and os.access(ffmpeg_path, os.X_OK):
-                return ffmpeg_path
-        
-        # 检查bin目录
-        bin_dir = os.path.join(current_dir, "bin")
-        if os.path.exists(bin_dir):
-            ffmpeg_path = os.path.join(bin_dir, "ffmpeg.exe")
-            if os.path.exists(ffmpeg_path) and os.access(ffmpeg_path, os.X_OK):
-                return ffmpeg_path
+        for base_path in search_paths:
+            if base_path and os.path.exists(base_path):
+                # 检查常见文件名
+                for filename in ["ffmpeg", "ffmpeg.exe"]:
+                    path = os.path.join(base_path, filename)
+                    if os.path.exists(path) and os.access(path, os.X_OK):
+                        return path
         
         return None
-
-    def convert_audio(self, input_file, output_dir):
-        """转换音频文件，支持多种格式"""
+    
+    def _get_format_params(self) -> Tuple[List[str], List[str]]:
+        """获取格式特定参数"""
+        if self.output_format in self.FORMAT_PRESETS:
+            preset = self.FORMAT_PRESETS[self.output_format]
+            return preset.get("flags", []), preset.get("params", [])
+        return [], ["-c:a", "copy"]
+    
+    def _get_unique_filename(self, filepath: str) -> str:
+        """生成唯一的输出文件名"""
+        base_path = Path(filepath)
+        counter = 1
+        
+        while base_path.exists():
+            new_name = f"{base_path.stem}_{counter}{base_path.suffix}"
+            base_path = base_path.parent / new_name
+            counter += 1
+        
+        return str(base_path)
+    
+    def convert_single_file(self, file_path: str, idx: int) -> Tuple[bool, str]:
+        """转换单个文件"""
+        if not self.ffmpeg_path:
+            return False, "FFmpeg未找到"
+        
         try:
-            # 获取输出格式
-            output_format = self.format_var.get()
-            output_ext = output_format.lower()
+            # 准备文件路径
+            src_path = Path(file_path)
+            output_name = f"{src_path.stem}.{self.output_format}"
+            output_path = Path(self.output_dir) / output_name
             
-            # 查找FFmpeg
-            ffmpeg_path = self.find_ffmpeg()
-            if not ffmpeg_path:
-                return False, "转换需要FFmpeg，请将ffmpeg.exe放在程序目录下"
+            # 检查并处理重复文件
+            if output_path.exists():
+                output_path = Path(self._get_unique_filename(str(output_path)))
             
-            # 生成输出文件名
-            filename = os.path.basename(input_file)
-            name_without_ext = os.path.splitext(filename)[0]
-            output_file = os.path.join(output_dir, f"{name_without_ext}.{output_ext}")
+            # 获取格式参数
+            format_flags, format_params = self._get_format_params()
             
-            # 构建FFmpeg命令 - 简化的转换命令
-            cmd = [ffmpeg_path, "-i", input_file]
-            
-            # 添加全局参数，提高兼容性
-            cmd.extend(["-y"])  # 覆盖输出文件
-            
-            # 确保输出格式正确 - 添加格式标志
-            format_flags = {
-                "mp3": ["-f", "mp3"],
-                "aac": ["-f", "adts"],
-                "m4a": ["-f", "mp4"],
-                "m4r": ["-f", "mp4"],
-                "ogg": ["-f", "ogg"],
-                "opus": ["-f", "opus"],
-                "wav": ["-f", "wav"],
-                "flac": ["-f", "flac"],
-                "aiff": ["-f", "aiff"],
-                "wv": ["-f", "wv"],
-                "alac": ["-f", "mp4"],
-                "wma": ["-f", "asf"],
-            }
-            
-            # 添加格式标志
-            if output_ext in format_flags:
-                cmd.extend(format_flags[output_ext])
-            
-            # 根据输出格式添加特定参数 - 所有格式都使用最高质量设置
-            format_specific_params = {
-                "mp3": ["-c:a", "libmp3lame", "-b:a", "320k"],
-                "wav": ["-c:a", "pcm_s32le"],
-                "flac": ["-c:a", "flac", "-compression_level", "12"],
-                "aac": ["-c:a", "aac", "-b:a", "320k"],
-                "ogg": ["-c:a", "libvorbis", "-q:a", "10"],
-                "m4a": ["-c:a", "aac", "-b:a", "320k"],
-                "m4r": ["-c:a", "aac", "-b:a", "320k"],
-                "wma": ["-c:a", "wmav2", "-b:a", "320k"],
-                "opus": ["-c:a", "libopus", "-b:a", "320k"],
-                "aiff": ["-c:a", "pcm_s16be"],
-                "alac": ["-c:a", "alac"],
-                "wv": ["-c:a", "wavpack"],
-            }
+            # 构建命令
+            cmd = [
+                self.ffmpeg_path,
+                "-i", str(src_path),
+                "-y",  # 覆盖输出文件
+                "-loglevel", "error",  # 只显示错误信息
+                "-stats"  # 显示进度统计
+            ]
             
             # 添加格式特定参数
-            if output_ext in format_specific_params:
-                cmd.extend(format_specific_params[output_ext])
+            cmd.extend(format_flags)
+            cmd.extend(format_params)
+            cmd.append(str(output_path))
+            
+            # 执行转换
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+            )
+            
+            # 处理输出并更新进度
+            last_progress = 0
+            for line in process.stderr:
+                if self.stop_flag.is_set():
+                    process.terminate()
+                    return False, "用户停止"
+                
+                if self.pause_flag.is_set():
+                    while self.pause_flag.is_set() and not self.stop_flag.is_set():
+                        self.msleep(100)
+                
+                # 解析进度信息（如果可用）
+                if "time=" in line:
+                    try:
+                        # 简化进度计算
+                        parts = line.split()
+                        for part in parts:
+                            if part.startswith("time="):
+                                time_str = part.split('=')[1]
+                                # 将时间转换为秒
+                                h, m, s = map(float, time_str.split(':'))
+                                current_seconds = h * 3600 + m * 60 + s
+                                
+                                # 估算文件时长（这里简化处理）
+                                estimated_duration = 180  # 假设3分钟
+                                progress = min(int((current_seconds / estimated_duration) * 100), 99)
+                                
+                                if progress > last_progress:
+                                    self.progress_update.emit(
+                                        progress,
+                                        f"转换中: {src_path.name}",
+                                        src_path.name,
+                                        True
+                                    )
+                                    last_progress = progress
+                    except:
+                        pass
+            
+            process.wait()
+            
+            if process.returncode == 0:
+                return True, str(output_path)
             else:
-                # 默认参数
-                cmd.extend(["-c:a", "copy"])
-            
-            # 确保输出文件路径正确
-            cmd.append(output_file)
-            
-            # 执行转换，不捕获输出，避免缓冲问题
-            self.current_process = subprocess.Popen(cmd, 
-                                                   stdout=subprocess.DEVNULL,
-                                                   stderr=subprocess.DEVNULL,
-                                                   creationflags=subprocess.CREATE_NO_WINDOW)
-            
-            # 循环检查进程状态和停止请求，避免长时间阻塞
-            import time
-            while self.current_process.poll() is None:  # 进程仍在运行
-                if self.stop_requested:  # 检查是否需要停止
-                    # 优雅终止进程
-                    self.current_process.terminate()
-                    # 等待进程终止
-                    try:
-                        self.current_process.wait(timeout=1.0)  # 等待1秒
-                    except subprocess.TimeoutExpired:
-                        # 强制终止
-                        self.current_process.kill()
-                        self.current_process.wait(timeout=0.5)  # 等待0.5秒
-                    # 删除可能生成的部分文件
-                    if os.path.exists(output_file):
-                        try:
-                            os.remove(output_file)
-                        except:
-                            pass
-                    return False, "转换已停止"
-                # 短暂休眠，避免CPU占用过高
-                time.sleep(0.1)
-            
-            # 检查转换结果
-            if self.current_process.returncode != 0:
-                # 删除失败的转换文件
-                if os.path.exists(output_file):
-                    try:
-                        os.remove(output_file)
-                    except:
-                        pass
-                return False, f"转换失败，返回码: {self.current_process.returncode}"
-            
-            # 检查是否在等待过程中收到停止请求
-            if self.stop_requested:
-                # 删除可能生成的文件
-                if os.path.exists(output_file):
-                    try:
-                        os.remove(output_file)
-                    except:
-                        pass
-                return False, "转换已停止"
-            
-            return True, output_file
-
+                return False, f"FFmpeg错误: {process.returncode}"
+                
         except Exception as e:
-            # 生成输出文件路径，用于删除可能的失败文件
-            output_format = self.format_var.get()
-            output_ext = output_format.lower()
-            filename = os.path.basename(input_file)
-            name_without_ext = os.path.splitext(filename)[0]
-            output_file = os.path.join(output_dir, f"{name_without_ext}.{output_ext}")
-            
-            # 删除可能生成的失败文件
-            if os.path.exists(output_file):
-                try:
-                    os.remove(output_file)
-                except:
-                    pass
-            return False, str(e)
-
-    # ========== 批量转换（线程避免UI卡顿） ==========
-    def start_convert_thread(self):
-        if not self.media_files:
-            messagebox.showwarning("提示", "请先添加音视频文件！")
-            return
-        output_dir = self.output_path.get()
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
-        
-        # 更新转换状态和按钮状态
-        self.is_converting = True
-        self.stop_requested = False
-        self.convert_btn.config(state="disabled")
-        # 手动设置停止按钮为可用状态并显示红色
-        self.stop_btn.config(state="normal", bg="#f44336", fg="white")
-
-        # 启动线程执行转换
-        threading.Thread(
-            target=self.batch_convert,
-            args=(output_dir,),
-            daemon=True
-        ).start()
-
-    def batch_convert(self, output_dir):
-        total = len(self.media_files)
-        self.progress["maximum"] = total
-        self.progress["value"] = 0
-
+            return False, f"转换异常: {str(e)}"
+    
+    def run(self):
+        """主运行方法"""
         success_count = 0
         fail_count = 0
-
-        for idx, file in enumerate(self.media_files):
-            if self.stop_requested:
+        skip_count = 0
+        total_files = len(self.files)
+        
+        for idx, file_path in enumerate(self.files):
+            if self.stop_flag.is_set():
                 break
-                
-            filename = os.path.basename(file)
-            # 更新状态文本
-            self.status_label.config(text=f"正在转换: {filename}")
-            self.root.update_idletasks()
-
-            try:
-                success, result = self.convert_audio(file, output_dir)
-                if success:
-                    success_count += 1
-                    self.progress_text.set(f"✓ 转换成功: {filename}")
-                else:
-                    fail_count += 1
-                    self.progress_text.set(f"✗ 转换失败: {filename} - {result}")
-                    if "转换已停止" not in result:
-                        messagebox.showerror("转换失败", f"文件 {filename} 转换失败: {result}")
-            except Exception as e:
+            
+            # 发送文件处理信号
+            self.file_processing.emit(idx, Path(file_path).name)
+            
+            # 检查文件是否存在
+            if not os.path.exists(file_path):
+                self.progress_update.emit(
+                    0, f"文件不存在: {file_path}", Path(file_path).name, False
+                )
                 fail_count += 1
-                self.progress_text.set(f"✗ 转换异常: {filename} - {str(e)}")
-                messagebox.showerror("转换异常", f"文件 {filename} 转换异常: {str(e)}")
-
-            self.progress["value"] = idx + 1
-            self.root.update_idletasks()
-
-        # 转换完成或停止
-        if self.stop_requested:
-            self.progress_text.set(f"转换已停止！已转换 {success_count} 个文件，失败 {fail_count} 个文件")
-            self.status_label.config(text="转换已停止")
-        else:
-            self.progress_text.set(f"转换完成！成功: {success_count}, 失败: {fail_count}")
-            self.status_label.config(text="转换完成")
-            messagebox.showinfo("完成", f"已转换{success_count}个文件到{output_dir}")
-            if self.open_dir.get() and success_count > 0:
-                try:
-                    os.startfile(output_dir)
-                except:
-                    pass
+                continue
+            
+            # 执行转换
+            success, message = self.convert_single_file(file_path, idx)
+            
+            # 更新进度
+            progress = int(((idx + 1) / total_files) * 100)
+            
+            if success:
+                success_count += 1
+                self.progress_update.emit(
+                    progress,
+                    f"✓ 转换成功",
+                    Path(file_path).name,
+                    True
+                )
+            else:
+                fail_count += 1
+                self.progress_update.emit(
+                    progress,
+                    f"✗ 转换失败: {message}",
+                    Path(file_path).name,
+                    False
+                )
+            
+            # 短暂暂停，让UI有机会更新
+            self.msleep(50)
         
-        # 恢复按钮状态
-        self.is_converting = False
-        self.convert_btn.config(state="normal")
-        # 手动设置停止按钮为禁用状态并显示灰色
-        self.stop_btn.config(state="disabled", bg="#bdbdbd", fg="white")
+        # 发送完成信号
+        self.conversion_complete.emit(success_count, fail_count, skip_count)
     
-    def stop_convert(self):
-        """停止转换，优雅终止进程，避免报错"""
-        self.stop_requested = True
-        self.status_label.config(text="正在停止转换...")
-        self.root.update_idletasks()
+    def pause(self):
+        """暂停转换"""
+        self.pause_flag.set()
+    
+    def resume(self):
+        """恢复转换"""
+        self.pause_flag.clear()
+    
+    def stop(self):
+        """停止转换"""
+        self.stop_flag.set()
+
+
+class AudioConverter(QMainWindow):
+    """优化的音频转换器主窗口"""
+    
+    def __init__(self):
+        super().__init__()
         
-        # 只设置停止标志，不直接终止进程
-        # 让batch_convert函数自然处理停止逻辑，避免强行终止导致的报错
-        # 这样可以确保进程有机会清理资源，避免报错
-        pass
+        # 初始化设置
+        self.settings = QSettings("AudioConverter", "AudioConverter")
+        
+        # 初始化变量
+        self.media_files = []
+        self.convert_thread = None
+        self.is_converting = False
+        self.current_row = -1
+        
+        # 颜色方案
+        self.colors = {
+            "primary": "#4361ee",
+            "secondary": "#4cc9f0",
+            "accent": "#f72585",
+            "text": "#2d3748",
+            "text_light": "#718096",
+            "background": "#f7fafc",
+            "white": "#ffffff",
+            "success": "#48bb78",
+            "warning": "#ed8936",
+            "error": "#f56565",
+            "disabled": "#a0aec0",
+            "table_header": "#edf2f7",
+            "table_row_even": "#f7fafc",
+            "table_row_odd": "#ffffff"
+        }
+        
+        # 支持的文件格式
+        self.supported_formats = {
+            "audio": ["wav", "mp3", "flac", "aac", "ogg", "wma", "m4a", 
+                     "aiff", "alac", "ape", "opus", "wv", "dsf", "dff"],
+            "video": ["mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", 
+                     "mpg", "mpeg", "ts", "m2ts", "3gp", "vob", "ogv"]
+        }
+        
+        self.init_ui()
+        self.load_settings()
+    
+    def init_ui(self):
+        """初始化用户界面"""
+        self.setWindowTitle("音频格式转换器 v2.1.0")
+        self.setAcceptDrops(True)
+        self.setFixedSize(695, 800)
+        
+        # 设置窗口图标
+        self.setWindowIcon(QIcon("d:/桌面/音频格式转换器/logo.ico"))
+        
+        self.setStyleSheet(self.get_stylesheet())
+        self.statusBar().hide()
+        
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        
+        main_layout = QVBoxLayout(central_widget)
+        main_layout.setSpacing(5)
+        main_layout.setContentsMargins(15, 15, 15, 15)
+       # 标题区域
+        title_label = QLabel("音频格式转换器")
+        title_label.setAlignment(Qt.AlignCenter)
+        title_label.setObjectName("titleLabel")
+        main_layout.addWidget(title_label)
+        
+        info_layout = QHBoxLayout()
+        info_layout.setAlignment(Qt.AlignCenter)
+        info_layout.setSpacing(5)
+        
+        info_text = QLabel("作者：凯拓 | 禁止商用 | <a href='https://github.com/Kaituo1/AudioTranscoder' style='color: #4361ee; text-decoration: none; font-size: 12px;'>GitHub</a> | <a href='https://space.bilibili.com/209568678?spm_id_from=333.1007.0.0' style='color: #4361ee; text-decoration: none; font-size: 12px;'>bilibili</a>")
+        info_text.setStyleSheet(f"color: {self.colors['text_light']}; font-size: 12px; padding: 0px; margin: 0px;")
+        info_text.setTextFormat(Qt.RichText)
+        info_text.setOpenExternalLinks(True)
+        info_layout.addWidget(info_text)
+        
+        separator = QLabel("|")
+        separator.setStyleSheet(f"color: {self.colors['text_light']}; font-size: 12px; padding: 0px; margin: 0px;")
+        info_layout.addWidget(separator)
+        
+        support_btn = QPushButton("支持作者")
+        support_btn.setStyleSheet("""QPushButton {
+            background-color: transparent;
+            border: none;
+            color: #f72585;
+            font-size: 12px;
+            padding: 0px;
+            margin: 0px;
+        }
+        QPushButton:hover {
+            text-decoration: underline;
+        }""")
+        support_btn.setToolTip("支持作者，打赏一杯咖啡")
+        support_btn.clicked.connect(self.show_support_window)
+        info_layout.addWidget(support_btn)
+        
+        info_container = QWidget()
+        info_container.setLayout(info_layout)
+        main_layout.addWidget(info_container)
+        
+        splitter = QSplitter(Qt.Vertical)
+        
+        file_widget = self.create_file_widget()
+        splitter.addWidget(file_widget)
+        
+        control_widget = self.create_control_widget()
+        splitter.addWidget(control_widget)
+        
+        splitter.setSizes([400, 300])
+        main_layout.addWidget(splitter, 1)
+    
+    def create_file_widget(self) -> QWidget:
+        """创建文件列表区域"""
+        widget = QWidget()
+        widget.setContentsMargins(0, 0, 0, 0)
+        layout = QVBoxLayout(widget)
+        layout.setSpacing(5)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        # 文件表格 - 宽度与软件一致，高度固定340
+        self.file_table = QTableWidget()
+        self.file_table.setColumnCount(4)
+        self.file_table.setHorizontalHeaderLabels(["文件名", "大小", "格式", "状态"])
+        
+        # 设置表格高度固定222，宽度自适应窗口
+        self.file_table.setFixedHeight(222)
+        
+        # 设置表格属性
+        self.file_table.setAlternatingRowColors(True)
+        self.file_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.file_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.file_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        
+        # 设置列宽
+        header = self.file_table.horizontalHeader()
+        # 文件名列占主要宽度，可拉伸
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        # 大小列设置最小宽度，避免内容拥挤
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        header.resizeSection(1, 100)  # 为大小列设置最小宽度
+        # 格式列固定宽度
+        header.setSectionResizeMode(2, QHeaderView.Fixed)
+        header.resizeSection(2, 80)   # 为格式列设置固定宽度
+        # 状态列固定宽度
+        header.setSectionResizeMode(3, QHeaderView.Fixed)
+        header.resizeSection(3, 120)  # 为状态列设置固定宽度
+        
+        # 设置自定义代理
+        self.file_table.setItemDelegate(StyledItemDelegate(self.file_table))
+        
+        # 创建表格容器，使用层叠布局让提示显示在表格中间
+        table_container = QWidget()
+        # 使用QVBoxLayout作为基础布局
+        table_layout = QVBoxLayout(table_container)
+        table_layout.setContentsMargins(0, 0, 0, 0)
+        table_layout.setSpacing(0)
+        
+        # 创建一个相对布局容器来放置表格和提示
+        relative_container = QWidget()
+        relative_container.setLayout(QVBoxLayout())
+        relative_container.layout().setContentsMargins(0, 0, 0, 0)
+        
+        # 添加表格到相对布局
+        relative_container.layout().addWidget(self.file_table)
+        
+        # 创建拖拽提示标签
+        self.drag_hint_label = QLabel("📁 拖拽文件到此处添加")
+        self.drag_hint_label.setAlignment(Qt.AlignCenter)
+        self.drag_hint_label.setFont(QFont("微软雅黑", 16, QFont.Bold))
+        self.drag_hint_label.setStyleSheet(
+            f"color: {self.colors['text_light']};")
+        # 使用绝对定位将提示标签放在表格中间
+        self.drag_hint_label.setParent(relative_container)
+        self.drag_hint_label.setGeometry(0, 0, 0, 0)
+        self.drag_hint_label.setFixedSize(relative_container.size())
+        self.drag_hint_label.setAlignment(Qt.AlignCenter)
+        
+        # 监听相对容器的大小变化，调整提示标签大小
+        relative_container.resizeEvent = lambda event: self.drag_hint_label.setFixedSize(event.size())
+        
+        # 将相对布局容器添加到主布局
+        table_layout.addWidget(relative_container)
+        
+        # 初始时表格为空，显示提示
+        self.update_drag_hint_visibility()
+        
+        layout.addWidget(table_container, 1)
+        
+        # 文件操作按钮 - 横向排列在一行，与窗口齐平
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(8)  # 设置按钮间距
+        
+        self.add_files_btn = self.create_button("添加文件", self.colors["primary"], self.add_files)
+        self.add_folder_btn = self.create_button("添加文件夹", self.colors["secondary"], self.add_folder)
+        self.remove_btn = self.create_button("移除所选", self.colors["warning"], self.remove_selected_files)
+        self.clear_btn = self.create_button("清空所有", self.colors["error"], self.clear_all_files)
+        
+        # 设置按钮宽度平均分配，填满窗口
+        self.add_files_btn.setMinimumWidth(220)
+        self.add_folder_btn.setMinimumWidth(220)
+        self.remove_btn.setMinimumWidth(220)
+        self.clear_btn.setMinimumWidth(220)
+        
+        button_layout.addWidget(self.add_files_btn, 1)  # 使用拉伸因子平均分配宽度
+        button_layout.addWidget(self.add_folder_btn, 1)
+        button_layout.addWidget(self.remove_btn, 1)
+        button_layout.addWidget(self.clear_btn, 1)
+        
+        layout.addLayout(button_layout)
+        
+        return widget
+    
+    def create_control_widget(self) -> QWidget:
+        """创建控制区域"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        # 输出设置
+        output_group = QGroupBox("输出设置")
+        output_layout = QVBoxLayout()
+        
+        # 输出目录
+        dir_layout = QHBoxLayout()
+        dir_layout.addWidget(QLabel("输出目录:"))
+        
+        self.output_dir_edit = QLineEdit()
+        self.output_dir_edit.setText(str(Path.home() / "AudioOutput"))
+        self.output_dir_edit.setReadOnly(True)
+        
+        browse_btn = self.create_button("浏览", self.colors["secondary"], 
+                                       self.browse_output_dir)
+        
+        dir_layout.addWidget(self.output_dir_edit, 1)
+        dir_layout.addWidget(browse_btn)
+        output_layout.addLayout(dir_layout)
+        
+        # 输出格式
+        format_layout = QHBoxLayout()
+        format_layout.addWidget(QLabel("输出格式:"))
+        
+        self.format_combo = QComboBox()
+        for format in ["MP3", "WAV", "FLAC", "AAC", "OGG", "M4A", "OPUS"]:
+            self.format_combo.addItem(format)
+        format_layout.addWidget(self.format_combo, 1)
+        
+        output_layout.addLayout(format_layout)
+        output_group.setLayout(output_layout)
+        layout.addWidget(output_group)
+        
+        # 转换控制
+        control_group = QGroupBox("转换控制")
+        control_layout = QVBoxLayout()
+        
+        # 进度条
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setTextVisible(True)
+        control_layout.addWidget(self.progress_bar)
+        
+        # 进度标签
+        self.progress_label = QLabel("等待开始...")
+        self.progress_label.setAlignment(Qt.AlignCenter)
+        control_layout.addWidget(self.progress_label)
+        
+        # 控制按钮
+        btn_layout = QHBoxLayout()
+        
+        self.start_btn = self.create_button("开始转换", self.colors["primary"], 
+                                           self.start_conversion)
+        self.pause_btn = self.create_button("暂停", self.colors["warning"], 
+                                           self.pause_conversion)
+        self.stop_btn = self.create_button("停止", self.colors["error"], 
+                                          self.stop_conversion)
+        
+        self.pause_btn.setEnabled(False)
+        self.stop_btn.setEnabled(False)
+        
+        btn_layout.addWidget(self.start_btn)
+        btn_layout.addWidget(self.pause_btn)
+        btn_layout.addWidget(self.stop_btn)
+        
+        control_layout.addLayout(btn_layout)
+        control_group.setLayout(control_layout)
+        layout.addWidget(control_group)
+        
+        # 选项
+        options_group = QGroupBox("选项")
+        options_layout = QVBoxLayout()
+        
+        self.open_folder_check = QCheckBox("转换完成后打开输出文件夹")
+        self.open_folder_check.setChecked(True)  # 默认勾选
+        
+        # 添加窗口置顶选项
+        self.always_on_top_check = QCheckBox("窗口置顶")
+        self.always_on_top_check.stateChanged.connect(self.toggle_always_on_top)
+        
+        options_layout.addWidget(self.open_folder_check)
+        options_layout.addWidget(self.always_on_top_check)
+        options_group.setLayout(options_layout)
+        layout.addWidget(options_group)
+        
+        return widget
+    
+    def create_button(self, text: str, color: str, callback) -> QPushButton:
+        """创建样式化按钮"""
+        btn = QPushButton(text)
+        # 构建样式表，使用f-string和双花括号转义CSS选择器
+        style = f"""
+            QPushButton {{
+                background-color: {color};
+                color: white;
+                border: none;
+                padding: 12px 20px;
+                border-radius: 6px;
+                font-weight: bold;
+                font-size: 14px;
+                min-width: 120px;
+            }}
+            QPushButton:hover {{
+                background-color: {self.darken_color(color, 20)};
+            }}
+            QPushButton:disabled {{
+                background-color: {self.colors['disabled']};
+            }}
+        """
+        btn.setStyleSheet(style)
+        btn.clicked.connect(callback)
+        return btn
+    
+    def get_stylesheet(self) -> str:
+        """获取应用样式表"""
+        return f"""
+            /* 全局样式 */
+            * {{
+                font-weight: bold;
+                font-size: 14px;
+                font-family: '微软雅黑', Arial, sans-serif;
+            }}
+            QMainWindow {{
+                background-color: {self.colors['background']};
+            }}
+            QLabel#titleLabel {{
+                font-size: 24px;
+                font-weight: bold;
+                color: {self.colors['primary']};
+                padding: 10px;
+            }}
+            QTableWidget {{
+                background-color: {self.colors['white']};
+                alternate-background-color: {self.colors['table_row_even']};
+                selection-background-color: {self.colors['primary']}40;
+            }}
+            QHeaderView::section {{
+                background-color: {self.colors['table_header']};
+                padding: 5px;
+                border: 1px solid {self.colors['background']};
+                font-weight: bold;
+            }}
+            QGroupBox {{
+                font-weight: bold;
+                border: 1px solid {self.colors['text_light']};
+                border-radius: 5px;
+                margin-top: 10px;
+                padding-top: 10px;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px 0 5px;
+            }}
+            QLineEdit {{
+                background-color: {self.colors['white']};
+                color: {self.colors['text']};
+                border: 1px solid {self.colors['text_light']};
+                border-radius: 4px;
+                padding: 8px 12px;
+                font-size: 14px;
+            }}
+            QLineEdit:read-only {{
+                background-color: {self.colors['table_row_even']};
+                color: {self.colors['text_light']};
+            }}
+            QLineEdit:focus {{
+                border-color: {self.colors['primary']};
+                outline: none;
+            }}
+            QComboBox {{
+                background-color: {self.colors['white']};
+                color: {self.colors['text']};
+                border: 1px solid {self.colors['text_light']};
+                border-radius: 4px;
+                padding: 8px 12px;
+                font-size: 14px;
+                min-width: 150px;
+            }}
+            QComboBox:focus {{
+                border-color: {self.colors['primary']};
+                outline: none;
+            }}
+            QCheckBox {{
+                color: {self.colors['text']};
+                font-size: 14px;
+                padding: 5px;
+            }}
+        """
+    
+    def darken_color(self, color: str, percent: int) -> str:
+        """颜色变暗"""
+        color = QColor(color)
+        return color.darker(100 + percent).name()
+    
+    def load_settings(self):
+        """加载设置"""
+        # 加载窗口位置和大小
+        geometry = self.settings.value("geometry")
+        if geometry:
+            self.restoreGeometry(geometry)
+        
+        # 加载输出目录
+        output_dir = self.settings.value("output_dir")
+        if output_dir:
+            self.output_dir_edit.setText(output_dir)
+        
+        # 加载选项 - 只保留"转换完成后打开输出文件夹"
+        self.open_folder_check.setChecked(
+            self.settings.value("open_folder", True, type=bool)
+        )
+    
+    def save_settings(self):
+        """保存设置"""
+        self.settings.setValue("geometry", self.saveGeometry())
+        self.settings.setValue("output_dir", self.output_dir_edit.text())
+        self.settings.setValue("open_folder", self.open_folder_check.isChecked())
+    
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        """处理拖拽进入事件"""
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+    
+    def dropEvent(self, event: QDropEvent):
+        """处理拖拽释放事件"""
+        urls = event.mimeData().urls()
+        added_files = []
+        
+        for url in urls:
+            file_path = url.toLocalFile()
+            if self.is_supported_file(file_path) and file_path not in self.media_files:
+                self.media_files.append(file_path)
+                added_files.append(file_path)
+        
+        if added_files:
+            self.update_file_table()
+            self.statusBar().showMessage(f"已添加 {len(added_files)} 个文件")
+    
+    def is_supported_file(self, file_path: str) -> bool:
+        """检查文件是否支持"""
+        ext = Path(file_path).suffix.lower().lstrip('.')
+        return (ext in self.supported_formats["audio"] or 
+                ext in self.supported_formats["video"])
+    
+    def update_file_table(self):
+        """更新文件表格"""
+        self.file_table.setRowCount(0)
+        
+        for idx, file_path in enumerate(self.media_files):
+            path = Path(file_path)
+            
+            # 获取文件大小
+            try:
+                size = path.stat().st_size
+                size_str = self.format_file_size(size)
+            except:
+                size_str = "未知"
+            
+            # 获取文件格式
+            ext = path.suffix.lower().lstrip('.')
+            
+            # 添加行
+            row = self.file_table.rowCount()
+            self.file_table.insertRow(row)
+            
+            # 设置单元格
+            self.file_table.setItem(row, 0, QTableWidgetItem(path.name))
+            self.file_table.setItem(row, 1, QTableWidgetItem(size_str))
+            self.file_table.setItem(row, 2, QTableWidgetItem(ext.upper()))
+            self.file_table.setItem(row, 3, QTableWidgetItem("等待"))
+            
+            # 设置文本对齐
+            self.file_table.item(row, 1).setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self.file_table.item(row, 2).setTextAlignment(Qt.AlignCenter)
+            self.file_table.item(row, 3).setTextAlignment(Qt.AlignCenter)
+        
+        self.update_drag_hint_visibility()
+    
+    def update_drag_hint_visibility(self):
+        """更新拖拽提示的可见性"""
+        if hasattr(self, 'drag_hint_label'):
+            if self.media_files:
+                self.drag_hint_label.hide()
+            else:
+                self.drag_hint_label.show()
+    
+    def format_file_size(self, size: int) -> str:
+        """格式化文件大小"""
+        for unit in ['B', 'KB', 'MB', 'GB']:
+            if size < 1024.0:
+                return f"{size:.1f} {unit}"
+            size /= 1024.0
+        return f"{size:.1f} TB"
+    
+    def add_files(self):
+        """添加文件"""
+        formats = " ".join(f"*.{fmt}" for fmt in 
+                          self.supported_formats["audio"] + self.supported_formats["video"])
+        
+        files, _ = QFileDialog.getOpenFileNames(
+            self, "选择文件", "", 
+            f"支持的文件 ({formats});;所有文件 (*.*)"
+        )
+        
+        if files:
+            new_files = [f for f in files if f not in self.media_files]
+            self.media_files.extend(new_files)
+            self.update_file_table()
+            
+            if new_files:
+                self.statusBar().showMessage(f"已添加 {len(new_files)} 个文件")
+    
+    def add_folder(self):
+        """添加文件夹"""
+        folder = QFileDialog.getExistingDirectory(self, "选择文件夹")
+        if folder:
+            new_files = []
+            for ext in self.supported_formats["audio"] + self.supported_formats["video"]:
+                pattern = f"**/*.{ext}"
+                for file in Path(folder).glob(pattern):
+                    file_str = str(file)
+                    if file_str not in self.media_files:
+                        self.media_files.append(file_str)
+                        new_files.append(file_str)
+            
+            if new_files:
+                self.update_file_table()
+                self.statusBar().showMessage(f"已添加 {len(new_files)} 个文件")
+    
+    def remove_selected_files(self):
+        """移除选中的文件"""
+        rows = set(item.row() for item in self.file_table.selectedItems())
+        if not rows:
+            return
+        
+        # 从后往前删除
+        for row in sorted(rows, reverse=True):
+            if row < len(self.media_files):
+                self.media_files.pop(row)
+        
+        self.update_file_table()
+    
+    def clear_all_files(self):
+        """清空所有文件"""
+        if self.media_files:
+            reply = QMessageBox.question(
+                self, "确认", "确定要清空所有文件吗？",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            
+            if reply == QMessageBox.Yes:
+                self.media_files.clear()
+                self.update_file_table()
+    
+    def browse_output_dir(self):
+        """浏览输出目录"""
+        dir_path = QFileDialog.getExistingDirectory(
+            self, "选择输出目录", self.output_dir_edit.text()
+        )
+        if dir_path:
+            self.output_dir_edit.setText(dir_path)
+    
+    def start_conversion(self):
+        """开始转换"""
+        if not self.media_files:
+            QMessageBox.warning(self, "提示", "请先添加要转换的文件")
+            return
+        
+        # 创建输出目录
+        output_dir = Path(self.output_dir_edit.text())
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 更新UI状态
+        self.is_converting = True
+        self.start_btn.setEnabled(False)
+        self.pause_btn.setEnabled(True)
+        self.stop_btn.setEnabled(True)
+        
+        # 重置表格状态
+        for row in range(self.file_table.rowCount()):
+            if item := self.file_table.item(row, 3):
+                item.setText("等待")
+        
+        # 创建并启动工作线程
+        self.convert_thread = ConvertWorker(
+            self.media_files,
+            str(output_dir),
+            self.format_combo.currentText()
+        )
+        
+        # 连接信号
+        self.convert_thread.progress_update.connect(self.update_progress)
+        self.convert_thread.file_processing.connect(self.update_current_file)
+        self.convert_thread.conversion_complete.connect(self.conversion_finished)
+        
+        self.convert_thread.start()
+        
+        self.statusBar().showMessage("转换开始...")
+    
+    def pause_conversion(self):
+        """暂停转换"""
+        if self.convert_thread and self.is_converting:
+            if not self.convert_thread.pause_flag.is_set():
+                self.convert_thread.pause()
+                self.pause_btn.setText("继续")
+                self.statusBar().showMessage("转换暂停")
+            else:
+                self.convert_thread.resume()
+                self.pause_btn.setText("暂停")
+                self.statusBar().showMessage("转换继续")
+    
+    def stop_conversion(self):
+        """停止转换"""
+        if self.convert_thread and self.is_converting:
+            reply = QMessageBox.question(
+                self, "确认", "确定要停止转换吗？",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            
+            if reply == QMessageBox.Yes:
+                self.convert_thread.stop()
+                self.statusBar().showMessage("正在停止转换...")
+    
+    def update_progress(self, progress: int, status: str, filename: str, success: bool):
+        """更新进度"""
+        self.progress_bar.setValue(progress)
+        self.progress_label.setText(f"{status}: {filename}")
+        
+        # 更新表格状态
+        for row in range(self.file_table.rowCount()):
+            if self.file_table.item(row, 0).text() == filename:
+                if item := self.file_table.item(row, 3):
+                    item.setText("成功" if success else "失败")
+                    item.setForeground(
+                        QColor(self.colors["success"] if success else self.colors["error"])
+                    )
+                break
+    
+    def update_current_file(self, idx: int, filename: str):
+        """更新当前处理文件"""
+        self.current_row = idx
+        self.file_table.viewport().update()
+    
+    def conversion_finished(self, success: int, fail: int, skip: int):
+        """转换完成"""
+        self.is_converting = False
+        self.current_row = -1
+        
+        # 更新UI状态
+        self.start_btn.setEnabled(True)
+        self.pause_btn.setEnabled(False)
+        self.pause_btn.setText("暂停")
+        self.stop_btn.setEnabled(False)
+        
+        # 显示完成消息
+        message = f"转换完成！成功: {success}, 失败: {fail}"
+        if skip > 0:
+            message += f", 跳过: {skip}"
+        
+        self.statusBar().showMessage(message)
+        QMessageBox.information(self, "完成", message)
+        
+        # 自动打开输出文件夹
+        if self.open_folder_check.isChecked() and success > 0:
+            self.open_output_folder()
+    
+    def open_output_folder(self):
+        """打开输出文件夹"""
+        output_dir = self.output_dir_edit.text()
+        if os.path.exists(output_dir):
+            if sys.platform == "win32":
+                os.startfile(output_dir)
+            elif sys.platform == "darwin":  # macOS
+                subprocess.run(["open", output_dir])
+            else:  # Linux
+                subprocess.run(["xdg-open", output_dir])
+    
+    def closeEvent(self, event):
+        """窗口关闭事件"""
+        if self.is_converting:
+            reply = QMessageBox.question(
+                self, "确认", "转换正在进行中，确定要退出吗？",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            
+            if reply == QMessageBox.No:
+                event.ignore()
+                return
+        
+        # 停止工作线程
+        if self.convert_thread and self.convert_thread.isRunning():
+            self.convert_thread.stop()
+            self.convert_thread.wait(2000)  # 等待2秒
+        
+        # 保存设置
+        self.save_settings()
+        
+        event.accept()
+    
+    def toggle_always_on_top(self, state):
+        """切换窗口置顶状态"""
+        if state == Qt.Checked:
+            self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
+        else:
+            self.setWindowFlags(self.windowFlags() & ~Qt.WindowStaysOnTopHint)
+        # 重新显示窗口以应用新的窗口标志
+        self.show()
+    
+    def show_support_window(self):
+        """显示支持作者窗口，包含付款码"""
+        from PyQt5.QtWidgets import QDialog
+        
+        # 创建支持窗口（使用QDialog以便使用exec_()方法实现模态窗口）
+        support_window = QDialog(self)
+        support_window.setWindowTitle("支持作者")
+        support_window.setFixedSize(750, 530)
+        
+        support_window.setWindowFlags(support_window.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        
+        # 设置窗口图标
+        support_window.setWindowIcon(QIcon("d:/桌面/音频格式转换器/logo.ico"))
+        
+        # 主布局
+        main_layout = QVBoxLayout(support_window)
+        main_layout.setAlignment(Qt.AlignTop | Qt.AlignCenter)
+        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        
+        # 标题
+        title_label = QLabel("支持作者，打赏一杯咖啡")
+        title_label.setAlignment(Qt.AlignCenter)
+        title_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #4361ee;")
+        main_layout.addWidget(title_label)
+        
+        # 创建水平图片容器
+        image_layout = QHBoxLayout()
+        image_layout.setAlignment(Qt.AlignCenter)
+        image_layout.setSpacing(20)
+        
+        # 支付宝图片
+        alipay_widget = QWidget()
+        alipay_layout = QVBoxLayout(alipay_widget)
+        alipay_layout.setAlignment(Qt.AlignCenter)
+        alipay_layout.setSpacing(10)
+        
+        alipay_label = QLabel("支付宝")
+        alipay_label.setAlignment(Qt.AlignCenter)
+        alipay_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #1677ff;")
+        alipay_layout.addWidget(alipay_label)
+        
+        alipay_pixmap = QPixmap("d:/桌面/音频格式转换器/支付宝.jpg")
+        if not alipay_pixmap.isNull():
+            alipay_image = QLabel()
+            alipay_image.setPixmap(alipay_pixmap.scaled(350, 350, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            alipay_layout.addWidget(alipay_image)
+        else:
+            alipay_error = QLabel("无法加载支付宝图片")
+            alipay_error.setAlignment(Qt.AlignCenter)
+            alipay_error.setStyleSheet("color: #f56565;")
+            alipay_layout.addWidget(alipay_error)
+        
+        image_layout.addWidget(alipay_widget)
+        
+        # 微信图片
+        wechat_widget = QWidget()
+        wechat_layout = QVBoxLayout(wechat_widget)
+        wechat_layout.setAlignment(Qt.AlignCenter)
+        wechat_layout.setSpacing(10)
+        
+        wechat_label = QLabel("微信")
+        wechat_label.setAlignment(Qt.AlignCenter)
+        wechat_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #07c160;")
+        wechat_layout.addWidget(wechat_label)
+        
+        wechat_pixmap = QPixmap("d:/桌面/音频格式转换器/微信.png")
+        if not wechat_pixmap.isNull():
+            wechat_image = QLabel()
+            wechat_image.setPixmap(wechat_pixmap.scaled(350, 350, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            wechat_layout.addWidget(wechat_image)
+        else:
+            wechat_error = QLabel("无法加载微信图片")
+            wechat_error.setAlignment(Qt.AlignCenter)
+            wechat_error.setStyleSheet("color: #f56565;")
+            wechat_layout.addWidget(wechat_error)
+        
+        image_layout.addWidget(wechat_widget)
+        
+        main_layout.addLayout(image_layout)
+        
+        # 关闭按钮
+        close_btn = QPushButton("关闭")
+        close_btn.setStyleSheet("""QPushButton {
+            background-color: #4361ee;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            font-size: 14px;
+            min-width: 100px;
+        }
+        QPushButton:hover {
+            background-color: #3a50d9;
+        }""")
+        close_btn.clicked.connect(support_window.close)
+        main_layout.addWidget(close_btn)
+        
+        # 显示模态窗口
+        support_window.exec_()
 
 
 if __name__ == "__main__":
-    # 使用普通的Tk类，不使用拖放功能
-    root = tk.Tk()
-    app = FixedAudioConverter(root)
-    root.mainloop()
+    # 设置高DPI支持
+    if hasattr(Qt, 'AA_EnableHighDpiScaling'):
+        QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    if hasattr(Qt, 'AA_UseHighDpiPixmaps'):
+        QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    
+    app = QApplication(sys.argv)
+    
+    # 设置应用信息
+    app.setApplicationName("音频格式转换器")
+    app.setApplicationVersion("2.1.0")
+    app.setOrganizationName("AudioTools")
+    
+    # 设置应用图标
+    app.setWindowIcon(QIcon("d:/桌面/音频格式转换器/logo.ico"))
+    
+    converter = AudioConverter()
+    converter.show()
+    
+    sys.exit(app.exec_())
